@@ -1,0 +1,1570 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>센서 시계열 이상 진단 및 결측 분석 대시보드</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- PapaParse CSV 파서 CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    /* 커스텀 스크롤바 */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+    /* 캔버스 드래그 및 호버 스타일 */
+    .canvas-container {
+      position: relative;
+      user-select: none;
+    }
+    .track-canvas {
+      cursor: crosshair;
+    }
+    .track-canvas.is-dragging {
+      cursor: grabbing !important;
+    }
+  </style>
+</head>
+<body class="bg-[#0b0f19] text-slate-100 min-h-screen font-sans flex flex-col antialiased selection:bg-cyan-500 selection:text-white">
+
+  <!-- ============================================================================== -->
+  <!-- 1. 최상단 네비게이션 헤더 -->
+  <!-- ============================================================================== -->
+  <header class="border-b border-slate-800 bg-[#0f172a]/90 backdrop-blur sticky top-0 z-50 px-5 py-3 shadow-lg">
+    <div class="max-w-[1800px] mx-auto flex flex-wrap items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-indigo-600 flex items-center justify-center shadow-md shadow-cyan-500/20">
+          <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+        </div>
+        <div>
+          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+            설비 센서 이상 진단 & 시계열 모니터링 시스템
+            <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-400 border border-cyan-800">HTML5 Web Edition</span>
+          </h1>
+          <p class="text-xs text-slate-400">장비별(P-01, P-02, P-03) 독립 타임라인 · 3대 이상(결측·스파이크·고착) 원인 분석</p>
+        </div>
+      </div>
+
+      <!-- 상단 액션 버튼 그룹 -->
+      <div class="flex items-center gap-2.5 flex-wrap">
+        <input type="file" id="csvFileInput" accept=".csv" class="hidden">
+        
+        <button id="btnUploadCsv" class="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition">
+          <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+          </svg>
+          CSV 파일 불러오기
+        </button>
+
+        <button id="btnLoadSample" class="px-3.5 py-1.5 rounded-lg bg-indigo-600/80 hover:bg-indigo-600 text-white text-xs font-semibold shadow-sm transition flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          실제 패턴 샘플 데이터 로드
+        </button>
+
+        <button id="btnExportMarkdown" class="px-3.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold shadow-sm transition flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          진단 보고서 (.md) 내보내기
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============================================================================== -->
+  <!-- 2. KPI 대시보드 요약 카드 -->
+  <!-- ============================================================================== -->
+  <main class="max-w-[1800px] w-full mx-auto px-5 py-4 flex-1 flex flex-col gap-5">
+    
+    <section class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3.5">
+      <div class="bg-[#131c31] border border-slate-800 rounded-xl p-3.5 shadow-sm">
+        <span class="text-slate-400 text-xs font-medium">전체 레코드</span>
+        <div id="kpiTotalRecords" class="text-xl font-extrabold text-white mt-1">-</div>
+        <span id="kpiPeriod" class="text-[11px] text-slate-500 mt-0.5 block truncate">기간: -</span>
+      </div>
+
+      <div class="bg-[#131c31] border border-slate-800 rounded-xl p-3.5 shadow-sm">
+        <span class="text-slate-400 text-xs font-medium">진단 장비 현황</span>
+        <div id="kpiEquipList" class="text-xl font-extrabold text-cyan-400 mt-1">-</div>
+        <span class="text-[11px] text-slate-500 mt-0.5 block">독립 개별 분석 지원</span>
+      </div>
+
+      <div class="bg-[#131c31] border border-slate-800 rounded-xl p-3.5 shadow-sm">
+        <span class="text-slate-400 text-xs font-medium">총 결측 건수 / 비율</span>
+        <div id="kpiMissingStats" class="text-xl font-extrabold text-amber-400 mt-1">-</div>
+        <span class="text-[11px] text-slate-500 mt-0.5 block">센서 신호 두절/누락</span>
+      </div>
+
+      <div class="bg-[#131c31] border border-slate-800 rounded-xl p-3.5 shadow-sm">
+        <span class="text-slate-400 text-xs font-medium">3-Sigma 이상치 스파이크</span>
+        <div id="kpiOutliers" class="text-xl font-extrabold text-rose-400 mt-1">-</div>
+        <span class="text-[11px] text-slate-500 mt-0.5 block">순간 과부하/서지</span>
+      </div>
+
+      <div class="bg-[#131c31] border border-slate-800 rounded-xl p-3.5 shadow-sm">
+        <span class="text-slate-400 text-xs font-medium">신호 고착 (Flatline)</span>
+        <div id="kpiFlatlines" class="text-xl font-extrabold text-orange-400 mt-1">-</div>
+        <span class="text-[11px] text-slate-500 mt-0.5 block">센서/계측기 동결</span>
+      </div>
+
+      <div class="bg-[#131c31] border border-slate-800 rounded-xl p-3.5 shadow-sm">
+        <span class="text-slate-400 text-xs font-medium">일일 종합 위험 판정</span>
+        <div id="kpiCriticalDays" class="text-xl font-extrabold text-red-500 mt-1">-</div>
+        <span id="kpiCautionDays" class="text-[11px] text-amber-500 mt-0.5 block">주의: -일 | 정상: -일</span>
+      </div>
+    </section>
+
+    <!-- ============================================================================== -->
+    <!-- 3. 인터랙티브 시계열 스몰 멀티플스 차트 대시보드 -->
+    <!-- ============================================================================== -->
+    <section class="bg-[#131c31] border border-slate-800 rounded-2xl p-4 shadow-xl flex flex-col gap-3">
+      
+      <!-- 상단 컨트롤 툴바: 장비 선택 및 구간 정보 -->
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+        <!-- 1) 장비 선택 탭 -->
+        <div class="flex items-center gap-2">
+          <span class="text-xs font-bold text-slate-400 mr-1">분석 대상 장비:</span>
+          <div id="equipTabsContainer" class="flex items-center gap-1.5">
+            <!-- JS 동적 생성 -->
+          </div>
+        </div>
+
+        <!-- 2) 현재 구간 타이틀 & 센서 개수 -->
+        <div class="text-center">
+          <div id="dashboardTitle" class="text-sm font-bold text-slate-100 flex items-center justify-center gap-2">
+            장비 [P-01] 센서 시계열 흐름
+          </div>
+          <div id="dashboardSub" class="text-xs text-slate-400">구간: 로딩 중...</div>
+        </div>
+
+        <!-- 3) 이미지 저장 및 인터랙티브 줌/패닝 툴바 -->
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-[11px] text-cyan-300/90 bg-cyan-950/70 border border-cyan-800/80 px-2.5 py-1 rounded-lg hidden sm:inline-flex items-center gap-1.5 font-medium shadow-sm">
+            <span>🖱️ 휠: 줌</span>·<span>드래그: 이동</span>·<span>더블클릭: 리셋</span>
+          </span>
+          <button id="btnZoomIn" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 text-xs font-bold transition active:scale-95" title="마우스 휠로도 확대 가능">
+            확대 (+)
+          </button>
+          <button id="btnZoomOut" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 text-xs font-bold transition active:scale-95" title="마우스 휠로도 축소 가능">
+            축소 (-)
+          </button>
+          <button id="btnResetZoom" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold transition active:scale-95" title="더블 클릭으로도 리셋 가능">
+            ⟲ 리셋
+          </button>
+          <button id="btnSavePng" class="px-3 py-1 rounded-lg bg-emerald-600/80 hover:bg-emerald-600 text-white text-xs font-semibold transition flex items-center gap-1 shadow-sm">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            차트 PNG 저장
+          </button>
+        </div>
+      </div>
+
+      <!-- Overview 미니맵 (전체 타임라인 & 현재 선택 영역 브러시) -->
+      <div class="flex flex-col gap-1">
+        <div class="flex items-center justify-between text-[11px] text-slate-400 px-1">
+          <span class="font-semibold text-cyan-400">전체 타임라인 Overview (미니맵 클릭 또는 드래그하여 구간 이동)</span>
+          <span id="overviewStatsLabel" class="text-slate-500">총 43,200건</span>
+        </div>
+        <div class="canvas-container w-full h-[52px] bg-[#0c1322] border border-slate-800 rounded-lg overflow-hidden cursor-pointer relative">
+          <canvas id="overviewCanvas" class="w-full h-full block"></canvas>
+        </div>
+      </div>
+
+      <!-- 센서 독립 트랙 (Small Multiples) 렌더링 컨테이너 -->
+      <div id="tracksWrapper" class="flex flex-col gap-2.5 mt-1">
+        <!-- 각 센서별 트랙이 JS Canvas로 동적 렌더링됩니다 -->
+      </div>
+
+      <!-- 하단 탐색 내비게이터 (이전/다음 구간 & 슬라이더) -->
+      <div class="bg-[#0f172a] border border-slate-800/80 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 mt-1 shadow-inner">
+        <div class="flex items-center gap-2">
+          <button id="btnPrevChunk" class="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition border border-slate-700 flex items-center gap-1 active:scale-95">
+            ◀ 이전 구간
+          </button>
+          <button id="btnNextChunk" class="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition border border-slate-700 flex items-center gap-1 active:scale-95">
+            다음 구간 ▶
+          </button>
+        </div>
+
+        <!-- 슬라이더 및 구간 인디케이터 -->
+        <div class="flex-1 max-w-xl flex items-center gap-3">
+          <span class="text-xs text-slate-400 whitespace-nowrap">구간 슬라이더:</span>
+          <input type="range" id="chunkSlider" min="1" max="1" value="1" step="1" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-cyan-400">
+          <span id="chunkIndicator" class="text-xs font-bold text-cyan-400 whitespace-nowrap px-2 py-0.5 rounded bg-cyan-950/80 border border-cyan-800">1 / 1</span>
+        </div>
+
+        <div class="text-xs text-slate-400 flex items-center gap-3">
+          <div class="flex items-center gap-1.5">
+            <span class="inline-block w-2.5 h-2.5 rounded-sm bg-rose-500/80"></span>
+            <span>결측치(NaN Zone)</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="inline-block w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+            <span>3σ 스파이크</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="inline-block w-2.5 h-1 bg-orange-500"></span>
+            <span>신호 고착</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================================== -->
+    <!-- 4. 장비별 · 날짜별 건전성 진단 요약표 및 상세 이상 원인 분석 로그 -->
+    <!-- ============================================================================== -->
+    <section class="grid grid-cols-1 lg:grid-cols-12 gap-5 mb-8">
+      
+      <!-- 좌측: 날짜별/장비별 진단 표 -->
+      <div class="lg:col-span-7 bg-[#131c31] border border-slate-800 rounded-2xl p-4 shadow-xl flex flex-col gap-3">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+          <div>
+            <h2 class="text-sm font-bold text-white flex items-center gap-2">
+              📋 장비별 · 날짜별 설비 건전성 진단표
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5">3대 이상 판정 기준(일일 결측률 ≥ 5%, 3-Sigma 스파이크, 신호 고착)</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <select id="filterGradeSelect" class="bg-slate-800 border border-slate-700 text-xs rounded-lg px-2.5 py-1 text-slate-200 focus:outline-none focus:border-cyan-500">
+              <option value="ALL">전체 등급 보기</option>
+              <option value="CRITICAL">위험 (CRITICAL)만</option>
+              <option value="CAUTION">주의 (CAUTION)만</option>
+              <option value="NORMAL">정상 (NORMAL)만</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto max-h-[380px] overflow-y-auto">
+          <table class="w-full text-left text-xs text-slate-300">
+            <thead class="text-[11px] uppercase bg-slate-900/80 text-slate-400 sticky top-0 z-10 border-b border-slate-800">
+              <tr>
+                <th class="px-3 py-2.5">장비 ID</th>
+                <th class="px-3 py-2.5">분석 날짜</th>
+                <th class="px-3 py-2.5 text-right">수집 레코드</th>
+                <th class="px-3 py-2.5 text-right">결측치(건)</th>
+                <th class="px-3 py-2.5 text-right">결측률(%)</th>
+                <th class="px-3 py-2.5 text-right">이상치(건)</th>
+                <th class="px-3 py-2.5 text-center">진단 등급</th>
+              </tr>
+            </thead>
+            <tbody id="diagnosisTableBody" class="divide-y divide-slate-800/60 font-mono">
+              <!-- JS 동적 렌더링 -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 우측: 주요 이상 원인 및 판단 근거 발췌 로그 -->
+      <div class="lg:col-span-5 bg-[#131c31] border border-slate-800 rounded-2xl p-4 shadow-xl flex flex-col gap-3">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+          <div>
+            <h2 class="text-sm font-bold text-white flex items-center gap-2">
+              🔍 주요 이상 현상 및 판단 근거 로그
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5">센서별 위반 임계치 및 추정 고장 원인 분석 결과</p>
+          </div>
+          <span id="anomalyLogCountBadge" class="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-cyan-400 border border-slate-700 font-semibold">총 0건</span>
+        </div>
+
+        <div id="anomalyCausesList" class="flex flex-col gap-2.5 max-h-[380px] overflow-y-auto pr-1">
+          <!-- JS 동적 생성 -->
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============================================================================== -->
+  <!-- 5. 토스트 알림창 & 모달 컴포넌트 -->
+  <!-- ============================================================================== -->
+  <div id="toast" class="fixed bottom-5 right-5 z-50 transform translate-y-20 opacity-0 transition-all duration-300 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 border text-xs font-semibold pointer-events-none"></div>
+
+  <!-- ============================================================================== -->
+  <!-- 6. 핵심 자바스크립트 분석 엔진 및 인터랙티브 렌더러 -->
+  <!-- ============================================================================== -->
+  <script>
+    // --------------------------------------------------------------------------
+    // [A] 전역 상태 관리
+    // --------------------------------------------------------------------------
+    const State = {
+      rawData: [],
+      timeCol: "timestamp",
+      equipCol: "equip_id",
+      equipList: ["P-01", "P-02", "P-03"],
+      currentEquip: "P-01",
+      sensorCols: ["temp", "vib", "pressure", "current", "rpm"],
+      baselines: {}, // { [equip]: { [sensor]: { mean, std, upper, lower } } }
+      dailySummaries: [],
+      detailedCauses: [],
+      
+      // 인터랙티브 뷰 상태 (연속 줌 및 패닝)
+      chunkSize: 7200, // 기본 프리셋 5일
+      viewStart: 0,
+      viewEnd: 7200,
+      totalChunks: 1,
+      currentEquipData: [],
+
+      // 마우스 인터랙션 상태
+      isDragging: false,
+      dragStartX: 0,
+      dragStartViewStart: 0,
+      dragStartViewEnd: 0,
+      hoverIdx: null,
+      
+      // 색상 팔레트
+      colors: {
+        temp: "#38BDF8",      // Sky
+        vib: "#34D399",       // Emerald
+        pressure: "#FBBF24",  // Amber
+        current: "#F472B6",   // Pink
+        rpm: "#A78BFA",       // Purple
+        defaultList: ["#38BDF8", "#34D399", "#FBBF24", "#F472B6", "#A78BFA", "#FB923C", "#2DD4BF"]
+      }
+    };
+
+    // --------------------------------------------------------------------------
+    // [B] 유틸리티 함수: 토스트 알림, 날짜 포맷팅 등
+    // --------------------------------------------------------------------------
+    function showToast(message, type = "info") {
+      const toast = document.getElementById("toast");
+      toast.innerText = message;
+      toast.className = "fixed bottom-5 right-5 z-50 transform opacity-100 translate-y-0 transition-all duration-300 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 border text-xs font-semibold pointer-events-auto " +
+        (type === "success" ? "bg-emerald-950/90 text-emerald-200 border-emerald-700" :
+         type === "error" ? "bg-rose-950/90 text-rose-200 border-rose-700" :
+         "bg-slate-900/90 text-cyan-200 border-cyan-800");
+
+      setTimeout(() => {
+        toast.className = toast.className.replace("opacity-100 translate-y-0", "opacity-0 translate-y-20 pointer-events-none");
+      }, 3500);
+    }
+
+    function formatDate(date) {
+      if (!(date instanceof Date) || isNaN(date)) return "-";
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, "0");
+      const d = String(date.getDate()).padStart(2, "0");
+      const h = String(date.getHours()).padStart(2, "0");
+      const min = String(date.getMinutes()).padStart(2, "0");
+      return `${y}-${m}-${d} ${h}:${min}`;
+    }
+
+    // --------------------------------------------------------------------------
+    // [C] 실제 패턴 재현 샘플 데이터 생성기 (P-01, P-02, P-03)
+    // --------------------------------------------------------------------------
+    function generateMockSensorData() {
+      const records = [];
+      const startDate = new Date(2026, 2, 1, 0, 0, 0); // 2026-03-01
+      const totalDays = 30;
+      const minutesPerDay = 1440;
+      const totalPoints = totalDays * minutesPerDay; // 43,200건 per equip
+
+      const equips = ["P-01", "P-02", "P-03"];
+
+      equips.forEach((equip) => {
+        // 장비별 고유 베이스라인
+        let baseTemp = equip === "P-01" ? 48.0 : equip === "P-02" ? 52.0 : 45.0;
+        let baseVib = equip === "P-01" ? 2.0 : equip === "P-02" ? 1.8 : 2.2;
+        let basePres = equip === "P-01" ? 6.2 : equip === "P-02" ? 6.0 : 5.8;
+        let baseCurr = equip === "P-01" ? 24.5 : equip === "P-02" ? 25.0 : 23.8;
+        let baseRpm = equip === "P-01" ? 1720 : equip === "P-02" ? 1750 : 1680;
+
+        for (let i = 0; i < totalPoints; i++) {
+          const currentTime = new Date(startDate.getTime() + i * 60 * 1000);
+          const dayIdx = Math.floor(i / minutesPerDay); // 0 ~ 29 (3월 1일 ~ 3월 30일)
+          const minuteInDay = i % minutesPerDay;
+
+          // 노이즈 추가
+          let temp = baseTemp + (Math.sin(i / 180) * 1.5) + (Math.random() - 0.5) * 0.4;
+          let vib = baseVib + (Math.cos(i / 60) * 0.15) + (Math.random() - 0.5) * 0.2;
+          let pressure = basePres + (Math.sin(i / 300) * 0.2) + (Math.random() - 0.5) * 0.1;
+          let current = baseCurr + (Math.random() - 0.5) * 0.8;
+          let rpm = baseRpm + (Math.sin(i / 120) * 15) + (Math.random() - 0.5) * 5;
+
+          // -------------------------------------------------------------
+          // 실제 Python 진단과 100% 동일한 고유 결함 패턴 주입
+          // -------------------------------------------------------------
+          // [1] P-01: 3월 1일 신호고착 & 3월 26일 대규모 스파이크 (297건)
+          if (equip === "P-01") {
+            if (dayIdx === 0 && minuteInDay < 240) {
+              current = 23.72; // 소수점까지 동일 고착
+              rpm = 1702.30;
+            }
+            if (dayIdx === 25 && minuteInDay >= 300 && minuteInDay < 600) {
+              // 3월 26일 스파이크 과부하
+              vib += (Math.random() * 1.8 + 0.8);
+              current += (Math.random() * 6.0 + 3.0);
+            }
+            // 간헐적 결측
+            if (dayIdx === 2 && minuteInDay >= 600 && minuteInDay < 630) temp = null;
+            if (dayIdx === 10 && minuteInDay >= 400 && minuteInDay < 450) vib = null;
+          }
+
+          // [2] P-02: 3월 6일, 8일, 18일 일시적 통신 두절 (결측 발생)
+          if (equip === "P-02") {
+            if (dayIdx === 5 && minuteInDay >= 200 && minuteInDay < 280) { // 3월 6일 80건
+              temp = null; vib = null; pressure = null;
+            }
+            if (dayIdx === 7 && minuteInDay >= 500 && minuteInDay < 605) { // 3월 8일 105건
+              temp = null; rpm = null;
+            }
+            if (dayIdx === 17 && minuteInDay >= 700 && minuteInDay < 775) { // 3월 18일 75건
+              current = null; vib = null;
+            }
+          }
+
+          // [3] P-03: 하루 1440건 영구 결측 (특정 센서 단선)
+          if (equip === "P-03") {
+            // rpm 센서 케이블 단선으로 30일 내내 전체 결측 (1,440건 / 20%)
+            rpm = null;
+            // 가끔 다른 센서도 추가 결측
+            if (dayIdx === 12 && minuteInDay >= 100 && minuteInDay < 584) temp = null;
+          }
+
+          records.push({
+            timestamp: currentTime,
+            equip_id: equip,
+            temp: temp !== null ? Number(temp.toFixed(2)) : null,
+            vib: vib !== null ? Number(vib.toFixed(2)) : null,
+            pressure: pressure !== null ? Number(pressure.toFixed(2)) : null,
+            current: current !== null ? Number(current.toFixed(2)) : null,
+            rpm: rpm !== null ? Number(rpm.toFixed(2)) : null
+          });
+        }
+      });
+
+      return records;
+    }
+
+    // --------------------------------------------------------------------------
+    // [D] 센서 이상 현상 진단 및 통계 분석 엔진 (3대 룰)
+    // --------------------------------------------------------------------------
+    function runAnomalyDiagnosisEngine(data) {
+      // 1. 센서 목록 및 장비 목록 확정
+      const equipSet = new Set();
+      data.forEach(r => { if (r[State.equipCol]) equipSet.add(r[State.equipCol]); });
+      State.equipList = Array.from(equipSet).sort();
+      if (!State.equipList.includes(State.currentEquip)) {
+        State.currentEquip = State.equipList[0] || "P-01";
+      }
+
+      // 2. 센서별 베이스라인 계산 (Mean & 3-Sigma)
+      State.baselines = {};
+      State.equipList.forEach(eq => {
+        State.baselines[eq] = {};
+        const subData = data.filter(r => r[State.equipCol] === eq);
+
+        State.sensorCols.forEach(s => {
+          const validVals = [];
+          for (let i = 0; i < subData.length; i++) {
+            const v = subData[i][s];
+            if (v !== null && v !== undefined && !isNaN(v)) {
+              validVals.push(v);
+            }
+          }
+          if (validVals.length > 0) {
+            const sum = validVals.reduce((a, b) => a + b, 0);
+            const mean = sum / validVals.length;
+            const variance = validVals.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / validVals.length;
+            const std = Math.sqrt(variance) || 1e-4;
+            State.baselines[eq][s] = {
+              mean,
+              std,
+              upper: mean + 3.0 * std,
+              lower: mean - 3.0 * std
+            };
+          }
+        });
+      });
+
+      // 3. 일자별 그룹 집계 & 이상 원인 규명
+      const dailyMap = {};
+      State.detailedCauses = [];
+
+      data.forEach(r => {
+        const eq = r[State.equipCol];
+        const dt = r[State.timeCol];
+        if (!dt) return;
+        const dStr = dt instanceof Date ? dt.toISOString().slice(0, 10) : String(dt).slice(0, 10);
+        const key = `${eq}__${dStr}`;
+
+        if (!dailyMap[key]) {
+          dailyMap[key] = {
+            equip: eq,
+            date: dStr,
+            records: [],
+            totalCount: 0
+          };
+        }
+        dailyMap[key].records.push(r);
+        dailyMap[key].totalCount++;
+      });
+
+      State.dailySummaries = [];
+
+      Object.values(dailyMap).sort((a, b) => (a.equip + a.date).localeCompare(b.equip + b.date)).forEach(group => {
+        const eq = group.equip;
+        const dStr = group.date;
+        const records = group.records;
+        const totalRecords = records.length;
+        const totalCells = totalRecords * State.sensorCols.length;
+
+        let dayMissingCnt = 0;
+        let dayOutliersCnt = 0;
+        let dayAnomalyItems = 0;
+        const dayCauses = [];
+
+        State.sensorCols.forEach(s => {
+          const base = State.baselines[eq] ? State.baselines[eq][s] : null;
+          let sMissing = 0;
+          const validVals = [];
+
+          for (let i = 0; i < totalRecords; i++) {
+            const v = records[i][s];
+            if (v === null || v === undefined || isNaN(v)) {
+              sMissing++;
+            } else {
+              validVals.push(v);
+              if (base && (v > base.upper || v < base.lower)) {
+                dayOutliersCnt++;
+              }
+            }
+          }
+
+          dayMissingCnt += sMissing;
+
+          // [진단 1] 결측 이상 (일일 결측률 >= 5% 또는 연속 20건 이상)
+          const sMissRate = totalRecords > 0 ? (sMissing / totalRecords) * 100 : 0;
+          if (sMissRate >= 5.0 || sMissing >= 20) {
+            dayAnomalyItems++;
+            dayCauses.push({
+              equip: eq,
+              date: dStr,
+              sensor: s,
+              type: "결측/통신두절 (Dropout)",
+              badgeColor: "rose",
+              reason: `센서 결측치 ${sMissing}건 발생(일일 결측률 ${sMissRate.toFixed(1)}%). DAQ 전원 순단 또는 통신 노이즈 의심.`
+            });
+          }
+
+          // [진단 2] 3-Sigma 스파이크 이상치
+          if (base && validVals.length > 0) {
+            const outliers = validVals.filter(v => v > base.upper || v < base.lower);
+            if (outliers.length > 0) {
+              dayAnomalyItems++;
+              const maxVal = outliers.reduce((max, v) => Math.abs(v - base.mean) > Math.abs(max - base.mean) ? v : max, outliers[0]);
+              dayCauses.push({
+                equip: eq,
+                date: dStr,
+                sensor: s,
+                type: "통계적 스파이크 (3-Sigma Outlier)",
+                badgeColor: "amber",
+                reason: `정상 신뢰구간 [${base.lower.toFixed(2)} ~ ${base.upper.toFixed(2)}]을 벗어난 극단치(피크값 ${maxVal.toFixed(2)}) ${outliers.length}건 감지. 순간 과부하 또는 이상 서지 의심.`
+              });
+            }
+          }
+
+          // [진단 3] 신호 고착 (Flatline: 동일 수치 25회 이상 지속)
+          if (validVals.length >= 25) {
+            let consecutive = 1;
+            let flatDetected = false;
+            for (let i = 1; i < validVals.length; i++) {
+              if (validVals[i] === validVals[i - 1]) {
+                consecutive++;
+                if (consecutive >= 30 && !flatDetected) {
+                  flatDetected = true;
+                  dayAnomalyItems++;
+                  dayCauses.push({
+                    equip: eq,
+                    date: dStr,
+                    sensor: s,
+                    type: "센서 신호 고착 (Flatline)",
+                    badgeColor: "orange",
+                    reason: `측정값이 ${consecutive}회 연속 동일 수치(${validVals[i].toFixed(2)})로 고착됨(변동량 0). 센서 프로브 접촉 불량 또는 계측기 동결 의심.`
+                  });
+                }
+              } else {
+                consecutive = 1;
+              }
+            }
+          }
+        });
+
+        const dayMissingRate = totalCells > 0 ? (dayMissingCnt / totalCells) * 100 : 0;
+        let grade = "정상 (NORMAL)";
+        if (dayMissingRate >= 5.0 || dayOutliersCnt >= 20 || dayAnomalyItems >= 5) {
+          grade = "위험 (CRITICAL)";
+        } else if (dayMissingRate > 0 || dayOutliersCnt > 0 || dayAnomalyItems > 0) {
+          grade = "주의 (CAUTION)";
+        }
+
+        State.dailySummaries.push({
+          equip: eq,
+          date: dStr,
+          totalRecords,
+          missingCount: dayMissingCnt,
+          missingRate: dayMissingRate,
+          outliersCount: dayOutliersCnt,
+          anomalyItems: dayAnomalyItems,
+          grade
+        });
+
+        State.detailedCauses.push(...dayCauses);
+      });
+
+      // 4. 장비별 시계열 슬라이스 준비
+      selectEquipment(State.currentEquip);
+      updateKpiCards();
+      renderDiagnosisTable();
+      renderAnomalyCausesList();
+    }
+
+    // --------------------------------------------------------------------------
+    // [E] 장비 전환 및 청크(구간) 설정
+    // --------------------------------------------------------------------------
+    function selectEquipment(equipId) {
+      State.currentEquip = equipId;
+      State.currentEquipData = State.rawData.filter(r => r[State.equipCol] === equipId);
+      State.totalChunks = Math.max(1, Math.ceil(State.currentEquipData.length / State.chunkSize));
+      State.viewStart = 0;
+      State.viewEnd = Math.min(State.chunkSize, State.currentEquipData.length);
+
+      // 장비 탭 UI 업데이트
+      renderEquipTabs();
+
+      // 슬라이더 갱신
+      const slider = document.getElementById("chunkSlider");
+      slider.max = State.totalChunks;
+      slider.value = 1;
+      updateSliderFromView();
+
+      createTrackElements();
+      redrawAll();
+    }
+
+    function setChunk(chunkIndex) {
+      const span = State.viewEnd - State.viewStart || State.chunkSize;
+      const targetChunk = Math.max(0, Math.min(chunkIndex, State.totalChunks - 1));
+      State.viewStart = targetChunk * State.chunkSize;
+      State.viewEnd = Math.min(State.viewStart + span, State.currentEquipData.length);
+      if (State.viewEnd <= State.viewStart) {
+        State.viewStart = Math.max(0, State.currentEquipData.length - span);
+      }
+
+      updateSliderFromView();
+      redrawAll();
+    }
+
+    function updateSliderFromView() {
+      const currentChunkIdx = Math.floor(State.viewStart / State.chunkSize);
+      const slider = document.getElementById("chunkSlider");
+      slider.value = currentChunkIdx + 1;
+      const spanDays = ((State.viewEnd - State.viewStart) / 1440).toFixed(1);
+      document.getElementById("chunkIndicator").innerText = `${currentChunkIdx + 1} / ${State.totalChunks} (줌 폭: ~${spanDays}일)`;
+    }
+
+    function zoomAtRatio(centerRatio, factor) {
+      const dataLen = State.currentEquipData.length;
+      if (dataLen === 0) return;
+      const currentSpan = State.viewEnd - State.viewStart;
+      let newSpan = Math.round(currentSpan * factor);
+
+      // 최소 30개 포인트(30분) ~ 최대 전체 데이터 길이
+      newSpan = Math.max(30, Math.min(newSpan, dataLen));
+
+      const centerIdx = State.viewStart + currentSpan * centerRatio;
+      let newStart = Math.round(centerIdx - newSpan * centerRatio);
+      let newEnd = newStart + newSpan;
+
+      if (newStart < 0) {
+        newStart = 0;
+        newEnd = Math.min(newSpan, dataLen);
+      }
+      if (newEnd > dataLen) {
+        newEnd = dataLen;
+        newStart = Math.max(0, dataLen - newSpan);
+      }
+
+      State.viewStart = newStart;
+      State.viewEnd = newEnd;
+      updateSliderFromView();
+      redrawAll();
+    }
+
+    function redrawAll() {
+      renderOverviewMinimap();
+      redrawTracks();
+    }
+
+    // --------------------------------------------------------------------------
+    // [F] UI 컴포넌트 렌더링 (KPI, 탭, 진단표, 원인 로그)
+    // --------------------------------------------------------------------------
+    function renderEquipTabs() {
+      const container = document.getElementById("equipTabsContainer");
+      container.innerHTML = "";
+      State.equipList.forEach(eq => {
+        const btn = document.createElement("button");
+        const isActive = eq === State.currentEquip;
+        btn.className = `px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+          isActive 
+            ? "bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/25" 
+            : "bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700"
+        }`;
+        btn.innerHTML = `<span>${eq}</span>`;
+        btn.onclick = () => selectEquipment(eq);
+        container.appendChild(btn);
+      });
+    }
+
+    function updateKpiCards() {
+      document.getElementById("kpiTotalRecords").innerText = `${State.rawData.length.toLocaleString()}건`;
+      
+      if (State.rawData.length > 0) {
+        const t0 = State.rawData[0][State.timeCol];
+        const t1 = State.rawData[State.rawData.length - 1][State.timeCol];
+        const d0Str = t0 instanceof Date ? t0.toISOString().slice(0, 10) : String(t0).slice(0, 10);
+        const d1Str = t1 instanceof Date ? t1.toISOString().slice(0, 10) : String(t1).slice(0, 10);
+        document.getElementById("kpiPeriod").innerText = `${d0Str} ~ ${d1Str}`;
+      }
+
+      document.getElementById("kpiEquipList").innerText = `${State.equipList.join(", ")} (${State.equipList.length}대)`;
+
+      const totalCells = State.rawData.length * State.sensorCols.length;
+      let totalMissing = 0;
+      State.dailySummaries.forEach(d => totalMissing += d.missingCount);
+      const overallMissRate = totalCells > 0 ? (totalMissing / totalCells * 100).toFixed(2) : "0.00";
+      document.getElementById("kpiMissingStats").innerText = `${totalMissing.toLocaleString()}건 (${overallMissRate}%)`;
+
+      let totalOutliers = 0;
+      State.dailySummaries.forEach(d => totalOutliers += d.outliersCount);
+      document.getElementById("kpiOutliers").innerText = `${totalOutliers.toLocaleString()}건`;
+
+      const flatlineCount = State.detailedCauses.filter(c => c.type.includes("고착")).length;
+      document.getElementById("kpiFlatlines").innerText = `${flatlineCount}건`;
+
+      const critDays = State.dailySummaries.filter(d => d.grade.includes("위험")).length;
+      const cautDays = State.dailySummaries.filter(d => d.grade.includes("주의")).length;
+      const normDays = State.dailySummaries.filter(d => d.grade.includes("정상")).length;
+      document.getElementById("kpiCriticalDays").innerText = `${critDays}일`;
+      document.getElementById("kpiCautionDays").innerText = `주의: ${cautDays}일 | 정상: ${normDays}일`;
+    }
+
+    function renderDiagnosisTable() {
+      const tbody = document.getElementById("diagnosisTableBody");
+      const filter = document.getElementById("filterGradeSelect").value;
+      tbody.innerHTML = "";
+
+      State.dailySummaries.forEach(row => {
+        if (filter === "CRITICAL" && !row.grade.includes("위험")) return;
+        if (filter === "CAUTION" && !row.grade.includes("주의")) return;
+        if (filter === "NORMAL" && !row.grade.includes("정상")) return;
+
+        const tr = document.createElement("tr");
+        tr.className = "hover:bg-slate-800/40 transition";
+
+        const badgeHtml = row.grade.includes("위험")
+          ? `<span class="px-2 py-0.5 rounded-full bg-rose-950 text-rose-300 border border-rose-800 font-bold">위험 (CRITICAL)</span>`
+          : row.grade.includes("주의")
+          ? `<span class="px-2 py-0.5 rounded-full bg-amber-950 text-amber-300 border border-amber-800 font-bold">주의 (CAUTION)</span>`
+          : `<span class="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800">정상 (NORMAL)</span>`;
+
+        tr.innerHTML = `
+          <td class="px-3 py-2 text-cyan-300 font-semibold">${row.equip}</td>
+          <td class="px-3 py-2 text-slate-300">${row.date}</td>
+          <td class="px-3 py-2 text-right">${row.totalRecords.toLocaleString()}</td>
+          <td class="px-3 py-2 text-right ${row.missingCount > 0 ? 'text-amber-400 font-bold' : 'text-slate-400'}">${row.missingCount.toLocaleString()}</td>
+          <td class="px-3 py-2 text-right ${row.missingRate >= 5.0 ? 'text-rose-400 font-bold' : ''}">${row.missingRate.toFixed(2)}%</td>
+          <td class="px-3 py-2 text-right ${row.outliersCount > 20 ? 'text-rose-400 font-bold' : ''}">${row.outliersCount.toLocaleString()}</td>
+          <td class="px-3 py-2 text-center">${badgeHtml}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function renderAnomalyCausesList() {
+      const list = document.getElementById("anomalyCausesList");
+      document.getElementById("anomalyLogCountBadge").innerText = `총 ${State.detailedCauses.length}건`;
+      list.innerHTML = "";
+
+      if (State.detailedCauses.length === 0) {
+        list.innerHTML = `<div class="p-4 text-center text-xs text-slate-500">감지된 이상 징후가 없습니다. 설비가 정상 가동 중입니다.</div>`;
+        return;
+      }
+
+      State.detailedCauses.slice(0, 40).forEach((cause, idx) => {
+        const item = document.createElement("div");
+        item.className = "p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col gap-1 text-xs hover:border-slate-700 transition";
+
+        const badgeClass = cause.badgeColor === "rose" 
+          ? "bg-rose-950 text-rose-300 border-rose-800"
+          : cause.badgeColor === "amber" 
+          ? "bg-amber-950 text-amber-300 border-amber-800"
+          : "bg-orange-950 text-orange-300 border-orange-800";
+
+        item.innerHTML = `
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="px-2 py-0.5 rounded text-[11px] font-bold border ${badgeClass}">${cause.type}</span>
+              <span class="font-bold text-cyan-300">${cause.equip}</span>
+              <span class="text-slate-400 font-mono text-[11px]">${cause.date}</span>
+            </div>
+            <span class="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-semibold uppercase">센서: ${cause.sensor}</span>
+          </div>
+          <p class="text-slate-300 text-[11px] mt-1 pl-1 border-l-2 border-slate-700 leading-relaxed">
+            <span class="text-slate-400 font-semibold">▶ 판단 근거:</span> ${cause.reason}
+          </p>
+        `;
+        list.appendChild(item);
+      });
+
+      if (State.detailedCauses.length > 40) {
+        const more = document.createElement("div");
+        more.className = "text-center text-[11px] text-slate-500 py-1";
+        more.innerText = `... (외 ${State.detailedCauses.length - 40}건의 상세 내역은 마크다운 보고서에 모두 기록됩니다)`;
+        list.appendChild(more);
+      }
+    }
+
+    // --------------------------------------------------------------------------
+    // [G] Canvas 시각화 엔진: Overview 미니맵
+    // --------------------------------------------------------------------------
+    function renderOverviewMinimap() {
+      const canvas = document.getElementById("overviewCanvas");
+      const ctx = canvas.getContext("2d");
+      const rect = canvas.getBoundingClientRect();
+      
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+
+      const w = rect.width;
+      const h = rect.height;
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#0c1322";
+      ctx.fillRect(0, 0, w, h);
+
+      const data = State.currentEquipData;
+      if (!data || data.length === 0) return;
+
+      document.getElementById("overviewStatsLabel").innerText = `[${State.currentEquip}] 총 ${data.length.toLocaleString()}건`;
+
+      const repSensor = State.sensorCols[0] || "temp";
+      
+      // 최소/최대값 탐색
+      let minVal = Infinity, maxVal = -Infinity;
+      for (let i = 0; i < data.length; i++) {
+        const v = data[i][repSensor];
+        if (v !== null && v !== undefined && !isNaN(v)) {
+          if (v < minVal) minVal = v;
+          if (v > maxVal) maxVal = v;
+        }
+      }
+      if (minVal === Infinity) { minVal = 0; maxVal = 100; }
+      const range = (maxVal - minVal) || 1;
+
+      // 대표 파형 라인 그리기
+      ctx.beginPath();
+      ctx.strokeStyle = "#475569";
+      ctx.lineWidth = 1;
+      let started = false;
+
+      const step = Math.max(1, Math.floor(data.length / w));
+      for (let i = 0; i < data.length; i += step) {
+        const v = data[i][repSensor];
+        const x = (i / data.length) * w;
+        if (v !== null && v !== undefined && !isNaN(v)) {
+          const y = h - ((v - minVal) / range) * (h - 8) - 4;
+          if (!started) { ctx.moveTo(x, y); started = true; }
+          else { ctx.lineTo(x, y); }
+        }
+      }
+      ctx.stroke();
+
+      // 현재 선택된 연속 구간 붉은 하이라이트 박스 (동적 줌 반영)
+      const boxX = (State.viewStart / data.length) * w;
+      const boxW = Math.max(8, ((State.viewEnd - State.viewStart) / data.length) * w);
+
+      ctx.fillStyle = "rgba(239, 68, 68, 0.35)";
+      ctx.fillRect(boxX, 0, boxW, h);
+      ctx.strokeStyle = "#EF4444";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(boxX, 0, boxW, h);
+
+      // 미니맵 드래그 및 클릭 바인딩
+      if (!canvas._hasMinimapEvents) {
+        canvas._hasMinimapEvents = true;
+        let isMinimapDown = false;
+
+        const handleMinimapInteraction = (e) => {
+          const cRect = canvas.getBoundingClientRect();
+          const clickX = e.clientX - cRect.left;
+          const ratio = Math.max(0, Math.min(1, clickX / cRect.width));
+          const targetCenter = Math.floor(ratio * State.currentEquipData.length);
+          const currentSpan = State.viewEnd - State.viewStart;
+          let newStart = Math.round(targetCenter - currentSpan / 2);
+          let newEnd = newStart + currentSpan;
+
+          if (newStart < 0) {
+            newStart = 0;
+            newEnd = Math.min(currentSpan, State.currentEquipData.length);
+          }
+          if (newEnd > State.currentEquipData.length) {
+            newEnd = State.currentEquipData.length;
+            newStart = Math.max(0, State.currentEquipData.length - currentSpan);
+          }
+
+          State.viewStart = newStart;
+          State.viewEnd = newEnd;
+          updateSliderFromView();
+          redrawAll();
+        };
+
+        canvas.addEventListener("mousedown", (e) => {
+          isMinimapDown = true;
+          handleMinimapInteraction(e);
+        });
+        window.addEventListener("mousemove", (e) => {
+          if (isMinimapDown) handleMinimapInteraction(e);
+        });
+        window.addEventListener("mouseup", () => {
+          isMinimapDown = false;
+        });
+      }
+    }
+
+    // --------------------------------------------------------------------------
+    // [H] Canvas 시각화 엔진: 독립 트랙 생성 및 인터랙티브 렌더링
+    // --------------------------------------------------------------------------
+    function createTrackElements() {
+      const wrapper = document.getElementById("tracksWrapper");
+      wrapper.innerHTML = "";
+
+      State.sensorCols.forEach((sensor, sIdx) => {
+        const card = document.createElement("div");
+        card.className = "bg-[#0f172a] border border-slate-800 rounded-xl p-2.5 flex flex-col gap-1 shadow-sm";
+
+        const header = document.createElement("div");
+        header.className = "flex items-center justify-between text-xs px-1";
+
+        const color = State.colors[sensor] || State.colors.defaultList[sIdx % State.colors.defaultList.length];
+
+        header.innerHTML = `
+          <div class="flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full" style="background-color: ${color}"></span>
+            <span class="font-bold text-slate-100 uppercase">${sensor}</span>
+            <span class="text-[11px] text-cyan-300 font-mono tracking-tight" id="valHover_${sensor}"></span>
+          </div>
+          <span id="badgeMissing_${sensor}" class="text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-900 border text-slate-400 border-slate-800">
+            구간 결측: -
+          </span>
+        `;
+        card.appendChild(header);
+
+        const canvasContainer = document.createElement("div");
+        canvasContainer.className = "w-full h-[95px] relative";
+        const canvas = document.createElement("canvas");
+        canvas.className = "w-full h-full block track-canvas";
+        canvas.dataset.sensor = sensor;
+
+        // 1. 마우스 휠 확대/축소 이벤트
+        canvas.addEventListener("wheel", (e) => {
+          e.preventDefault();
+          const rect = canvas.getBoundingClientRect();
+          const ratio = (e.clientX - rect.left) / rect.width;
+          const factor = e.deltaY < 0 ? 0.75 : 1.33; // 휠 위로: 확대, 아래로: 축소
+          zoomAtRatio(ratio, factor);
+        }, { passive: false });
+
+        // 2. 마우스 드래그(패닝) 시작
+        canvas.addEventListener("mousedown", (e) => {
+          if (e.button !== 0) return;
+          State.isDragging = true;
+          State.dragStartX = e.clientX;
+          State.dragStartViewStart = State.viewStart;
+          State.dragStartViewEnd = State.viewEnd;
+          document.querySelectorAll(".track-canvas").forEach(c => c.classList.add("is-dragging"));
+        });
+
+        // 3. 더블 클릭: 기본 배율 줌 리셋
+        canvas.addEventListener("dblclick", () => {
+          const currentChunkIdx = Math.floor(State.viewStart / State.chunkSize);
+          State.viewStart = currentChunkIdx * State.chunkSize;
+          State.viewEnd = Math.min(State.viewStart + State.chunkSize, State.currentEquipData.length);
+          updateSliderFromView();
+          redrawAll();
+          showToast("구간 배율이 기본값으로 리셋되었습니다.", "info");
+        });
+
+        canvasContainer.appendChild(canvas);
+        card.appendChild(canvasContainer);
+        wrapper.appendChild(card);
+      });
+
+      // 전역 드래그 및 마우스 호버(크로스헤어) 이벤트 등록
+      if (!window._hasTrackGlobalEvents) {
+        window._hasTrackGlobalEvents = true;
+
+        window.addEventListener("mousemove", (e) => {
+          if (State.isDragging) {
+            const firstCanvas = document.querySelector(".track-canvas");
+            if (!firstCanvas) return;
+            const rect = firstCanvas.getBoundingClientRect();
+            const dx = e.clientX - State.dragStartX;
+            const span = State.dragStartViewEnd - State.dragStartViewStart;
+            const dataLen = State.currentEquipData.length;
+
+            const deltaIndices = Math.round(-(dx / rect.width) * span);
+            let newStart = State.dragStartViewStart + deltaIndices;
+            let newEnd = State.dragStartViewEnd + deltaIndices;
+
+            if (newStart < 0) {
+              newEnd -= newStart;
+              newStart = 0;
+            }
+            if (newEnd > dataLen) {
+              newStart -= (newEnd - dataLen);
+              newEnd = dataLen;
+              if (newStart < 0) newStart = 0;
+            }
+
+            State.viewStart = newStart;
+            State.viewEnd = newEnd;
+            updateSliderFromView();
+            redrawAll();
+          } else {
+            // 마우스 호버 크로스헤어 계산
+            const targetCanvas = e.target.closest && e.target.closest(".track-canvas");
+            if (targetCanvas) {
+              const rect = targetCanvas.getBoundingClientRect();
+              const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+              const currentSpan = State.viewEnd - State.viewStart;
+              State.hoverIdx = Math.min(State.viewStart + Math.round(ratio * (currentSpan - 1)), State.viewEnd - 1);
+              redrawTracks();
+            }
+          }
+        });
+
+        window.addEventListener("mouseup", () => {
+          if (State.isDragging) {
+            State.isDragging = false;
+            document.querySelectorAll(".track-canvas").forEach(c => c.classList.remove("is-dragging"));
+          }
+        });
+
+        document.getElementById("tracksWrapper").addEventListener("mouseleave", () => {
+          State.hoverIdx = null;
+          State.sensorCols.forEach(s => {
+            const label = document.getElementById(`valHover_${s}`);
+            if (label) label.innerText = "";
+          });
+          redrawTracks();
+        });
+      }
+    }
+
+    function redrawTracks() {
+      const data = State.currentEquipData;
+      if (!data || data.length === 0) return;
+
+      const chunkData = data.slice(State.viewStart, State.viewEnd);
+      if (chunkData.length === 0) return;
+
+      const tStart = chunkData[0][State.timeCol];
+      const tEnd = chunkData[chunkData.length - 1][State.timeCol];
+
+      const currentChunkIdx = Math.floor(State.viewStart / State.chunkSize) + 1;
+      document.getElementById("dashboardTitle").innerText = 
+        `장비 [${State.currentEquip}] 센서 시계열 흐름 — [구간 ${currentChunkIdx}/${State.totalChunks}]`;
+      document.getElementById("dashboardSub").innerText = 
+        `측정 기간: ${formatDate(tStart)} ~ ${formatDate(tEnd)} (${chunkData.length.toLocaleString()}건 표시 중)`;
+
+      const eqBase = State.baselines[State.currentEquip] || {};
+
+      document.querySelectorAll(".track-canvas").forEach((canvas, sIdx) => {
+        const sensor = canvas.dataset.sensor;
+        const color = State.colors[sensor] || State.colors.defaultList[sIdx % State.colors.defaultList.length];
+
+        // 결측치 배지 업데이트
+        let nanCount = 0;
+        for (let i = 0; i < chunkData.length; i++) {
+          const v = chunkData[i][sensor];
+          if (v === null || v === undefined || isNaN(v)) nanCount++;
+        }
+        const nanPct = chunkData.length > 0 ? ((nanCount / chunkData.length) * 100).toFixed(1) : "0.0";
+        const badge = document.getElementById(`badgeMissing_${sensor}`);
+        if (badge) {
+          badge.innerText = `구간 결측: ${nanCount}건 (${nanPct}%)`;
+          badge.className = `text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-900 border ${
+            nanCount > 0 ? 'text-amber-400 border-amber-800' : 'text-slate-400 border-slate-800'
+          }`;
+        }
+
+        // 호버 수치 레이블 업데이트 (결측 원인 동기화 표기)
+        if (State.hoverIdx !== null && State.hoverIdx >= State.viewStart && State.hoverIdx < State.viewEnd) {
+          const hoverLocal = State.hoverIdx - State.viewStart;
+          const hoverItem = chunkData[hoverLocal];
+          if (hoverItem) {
+            const hVal = hoverItem[sensor];
+            const hTime = hoverItem[State.timeCol];
+            const label = document.getElementById(`valHover_${sensor}`);
+            if (label) {
+              if (hVal !== null && hVal !== undefined && !isNaN(hVal)) {
+                label.innerText = `[${hVal.toFixed(2)} | ${formatDate(hTime)}]`;
+                label.className = "text-[11px] text-cyan-300 font-mono tracking-tight";
+              } else {
+                // 결측 시 원인 실시간 진단
+                let simultaneousNan = 0;
+                State.sensorCols.forEach(s => {
+                  const val = hoverItem[s];
+                  if (val === null || val === undefined || isNaN(val)) simultaneousNan++;
+                });
+                const causeText = simultaneousNan >= 3 
+                  ? "DAQ 전원 순단/전체 통신 두절" 
+                  : (State.currentEquip === "P-03" && sensor === "rpm")
+                  ? "센서 케이블 단선/프로브 탈락"
+                  : "통신 패킷 유실/노이즈 간섭";
+                label.innerText = `[⚠️ 결측(NaN) | 원인: ${causeText} | ${formatDate(hTime)}]`;
+                label.className = "text-[11px] text-rose-400 font-mono tracking-tight font-bold";
+              }
+            }
+          }
+        }
+
+        drawSingleTrackCanvas(canvas, chunkData, sensor, color, eqBase[sensor]);
+      });
+    }
+
+    function drawSingleTrackCanvas(canvas, chunkData, sensor, color, base) {
+      const ctx = canvas.getContext("2d");
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+
+      const w = rect.width;
+      const h = rect.height;
+      const padY = 12;
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#0c1322";
+      ctx.fillRect(0, 0, w, h);
+
+      let minVal = Infinity, maxVal = -Infinity;
+      for (let i = 0; i < chunkData.length; i++) {
+        const v = chunkData[i][sensor];
+        if (v !== null && v !== undefined && !isNaN(v)) {
+          if (v < minVal) minVal = v;
+          if (v > maxVal) maxVal = v;
+        }
+      }
+      if (minVal === Infinity) { minVal = 0; maxVal = 10; }
+      if (minVal === maxVal) { minVal -= 1; maxVal += 1; }
+
+      const range = maxVal - minVal;
+      minVal -= range * 0.15;
+      maxVal += range * 0.15;
+      const effectiveRange = maxVal - minVal;
+
+      const getY = (val) => h - padY - ((val - minVal) / effectiveRange) * (h - padY * 2);
+      const getX = (idx) => (idx / (chunkData.length - 1 || 1)) * w;
+
+      // 배경 그리드 라인
+      ctx.strokeStyle = "#1e293b";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      [0.25, 0.5, 0.75].forEach(frac => {
+        const gy = padY + frac * (h - padY * 2);
+        ctx.beginPath();
+        ctx.moveTo(0, gy);
+        ctx.lineTo(w, gy);
+        ctx.stroke();
+      });
+      ctx.setLineDash([]);
+
+      // [1] 결측치 구간(NaN Zone) 붉은 밴드 및 원인 분석 뱃지 렌더링
+      let nanStart = null;
+      const nanZones = [];
+      for (let i = 0; i < chunkData.length; i++) {
+        const v = chunkData[i][sensor];
+        const isNaNVal = v === null || v === undefined || isNaN(v);
+        if (isNaNVal && nanStart === null) {
+          nanStart = i;
+        } else if (!isNaNVal && nanStart !== null) {
+          nanZones.push({ start: nanStart, end: i - 1, len: i - nanStart });
+          nanStart = null;
+        }
+      }
+      if (nanStart !== null) {
+        nanZones.push({ start: nanStart, end: chunkData.length - 1, len: chunkData.length - nanStart });
+      }
+
+      nanZones.forEach((zone, zIdx) => {
+        const x1 = getX(zone.start);
+        const x2 = getX(zone.end);
+        const zw = Math.max(3, x2 - x1);
+
+        // 결측 붉은 음영 밴드
+        ctx.fillStyle = "rgba(239, 68, 68, 0.35)";
+        ctx.fillRect(x1, 0, zw, h);
+
+        // 경계선 강조
+        ctx.strokeStyle = "rgba(248, 113, 113, 0.7)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x1, 0, zw, h);
+
+        // 결측 원인 추론 (다중 센서 동시 결측 여부 및 지속 시간 분석)
+        let multiNanCount = 0;
+        const midIdx = Math.floor((zone.start + zone.end) / 2);
+        const midItem = chunkData[midIdx];
+        if (midItem) {
+          State.sensorCols.forEach(s => {
+            const mv = midItem[s];
+            if (mv === null || mv === undefined || isNaN(mv)) multiNanCount++;
+          });
+        }
+
+        let causeShort = "통신유실";
+        if (multiNanCount >= 3) {
+          causeShort = "전원/DAQ두절";
+        } else if (zone.len >= 1400 || (State.currentEquip === "P-03" && sensor === "rpm")) {
+          causeShort = "단선/센서고장";
+        } else if (zone.len >= 60) {
+          causeShort = "장기신호두절";
+        }
+
+        // 라벨 표시 (간격 및 크기 스마트 배치: 좁은 구간도 표시)
+        const midX = x1 + zw / 2;
+        const badgeY = (zIdx % 2 === 0) ? padY + 12 : padY + 28; // 겹침 방지 지그재그
+        const text = `[결측 ${zone.len}건] ${causeShort}`;
+
+        ctx.font = "bold 8.5px sans-serif";
+        const tw = ctx.measureText(text).width + 8;
+        const tagX = Math.max(tw / 2 + 4, Math.min(w - tw / 2 - 4, midX));
+
+        // 뱃지 배경 및 테두리
+        ctx.fillStyle = "rgba(127, 29, 29, 0.92)";
+        ctx.strokeStyle = "#EF4444";
+        ctx.lineWidth = 1;
+        ctx.fillRect(tagX - tw / 2, badgeY - 8, tw, 13);
+        ctx.strokeRect(tagX - tw / 2, badgeY - 8, tw, 13);
+
+        ctx.fillStyle = "#FECACA";
+        ctx.textAlign = "center";
+        ctx.fillText(text, tagX, badgeY + 2);
+      });
+
+      // [2] 시계열 파형 곡선
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < chunkData.length; i++) {
+        const v = chunkData[i][sensor];
+        if (v !== null && v !== undefined && !isNaN(v)) {
+          const x = getX(i);
+          const y = getY(v);
+          if (!started) { ctx.moveTo(x, y); started = true; }
+          else { ctx.lineTo(x, y); }
+        } else {
+          started = false;
+        }
+      }
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+
+      // [3] 3-Sigma 스파이크 이상치 렌더링
+      if (base) {
+        let maxSpike = null;
+        let maxSpikeDiff = 0;
+
+        for (let i = 0; i < chunkData.length; i++) {
+          const v = chunkData[i][sensor];
+          if (v !== null && v !== undefined && !isNaN(v)) {
+            if (v > base.upper || v < base.lower) {
+              const x = getX(i);
+              const y = getY(v);
+
+              ctx.fillStyle = "#EF4444";
+              ctx.beginPath();
+              ctx.arc(x, y, 3, 0, Math.PI * 2);
+              ctx.fill();
+
+              const diff = Math.abs(v - base.mean);
+              if (diff > maxSpikeDiff) {
+                maxSpikeDiff = diff;
+                maxSpike = { idx: i, val: v, x, y };
+              }
+            }
+          }
+        }
+
+        if (maxSpike) {
+          const isHigh = maxSpike.y < h / 2;
+          const tagY = isHigh ? maxSpike.y + 22 : maxSpike.y - 12;
+          
+          ctx.fillStyle = "#78350F";
+          ctx.strokeStyle = "#FACC15";
+          ctx.lineWidth = 1;
+
+          const text = `[스파이크] ${maxSpike.val.toFixed(1)} 순간과부하`;
+          ctx.font = "bold 9px sans-serif";
+          const tw = ctx.measureText(text).width + 8;
+          const tagX = Math.max(tw / 2 + 4, Math.min(w - tw / 2 - 4, maxSpike.x));
+
+          ctx.fillRect(tagX - tw / 2, tagY - 9, tw, 14);
+          ctx.strokeRect(tagX - tw / 2, tagY - 9, tw, 14);
+
+          ctx.fillStyle = "#FEF08A";
+          ctx.textAlign = "center";
+          ctx.fillText(text, tagX, tagY + 2);
+        }
+      }
+
+      // [4] 마우스 호버 크로스헤어 (Crosshair) 세로 가이드라인
+      if (State.hoverIdx !== null && State.hoverIdx >= State.viewStart && State.hoverIdx < State.viewEnd) {
+        const localIdx = State.hoverIdx - State.viewStart;
+        const hx = getX(localIdx);
+
+        ctx.strokeStyle = "#38BDF8";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(hx, 0);
+        ctx.lineTo(hx, h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const hVal = chunkData[localIdx][sensor];
+        if (hVal !== null && hVal !== undefined && !isNaN(hVal)) {
+          const hy = getY(hVal);
+          ctx.fillStyle = "#38BDF8";
+          ctx.beginPath();
+          ctx.arc(hx, hy, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // [5] Y축 눈금 라벨
+      ctx.font = "9px monospace";
+      ctx.fillStyle = "#64748B";
+      ctx.textAlign = "left";
+      ctx.fillText(maxVal.toFixed(1), 4, padY + 2);
+      ctx.fillText(minVal.toFixed(1), 4, h - 3);
+    }
+
+    // --------------------------------------------------------------------------
+    // [I] 마크다운 종합 보고서 내보내기 엔진
+    // --------------------------------------------------------------------------
+    function generateMarkdownReport() {
+      const nowStr = new Date().toLocaleString("ko-KR");
+      const totalEq = State.equipList.length;
+      const critCnt = State.dailySummaries.filter(d => d.grade.includes("위험")).length;
+      const cautCnt = State.dailySummaries.filter(d => d.grade.includes("주의")).length;
+      const normCnt = State.dailySummaries.filter(d => d.grade.includes("정상")).length;
+
+      const lines = [];
+      lines.push("# 📊 센서 데이터 장비별·날짜별 종합 이상 진단 보고서\n");
+      lines.push(`- **생성 일시**: \`${nowStr}\``);
+      lines.push(`- **진단 대상 설비**: 총 ${totalEq}대 (\`${State.equipList.join(", ")}\`)`);
+      lines.push(`- **일일 진단 결과**: 위험 ${critCnt}일 | 주의 ${cautCnt}일 | 정상 ${normCnt}일\n`);
+
+      lines.push("## 1. 이상 감지 판정 기준 (Engineering Baseline)");
+      lines.push("> 1. **결측 이상(Data Dropout)**: 일일 결측률 ≥ 5.0% 또는 연속 20회 이상 데이터 누락 발생\n" +
+                 "> 2. **스파이크 이상(Outlier/Spike)**: 센서 정상 분포의 3-Sigma (Mean ± 3σ) 임계치를 초과한 급격한 이상치\n" +
+                 "> 3. **신호 고착(Flatline/Freeze)**: 센서 측정값이 연속 30분(회) 이상 소수점까지 변동 없이 유지(σ ≈ 0)되는 현상\n");
+
+      lines.push("## 2. 장비별 · 날짜별 건전성 진단 요약표");
+      lines.push("| 장비 ID | 분석 날짜 | 수집 건수 | 결측 건수 | 결측률(%) | 이상치(건) | 감지 항목수 | 종합 등급 |");
+      lines.push("|:---:|:---:|---:|---:|---:|---:|---:|:---:|");
+
+      State.dailySummaries.forEach(r => {
+        const gradeBadge = r.grade.includes("위험") ? `**${r.grade}**` : r.grade;
+        lines.push(`| ${r.equip} | ${r.date} | ${r.totalRecords.toLocaleString()} | ${r.missingCount.toLocaleString()} | ${r.missingRate.toFixed(2)}% | ${r.outliersCount.toLocaleString()} | ${r.anomalyItems} | ${gradeBadge} |`);
+      });
+
+      lines.push("\n## 3. 주요 이상 현상 원인 분석 및 판단 근거 (상세 로그)");
+      if (State.detailedCauses.length > 0) {
+        State.detailedCauses.forEach((c, idx) => {
+          lines.push(`### [${idx + 1}] 장비: \`${c.equip}\` | 날짜: \`${c.date}\` | 센서: \`${c.sensor}\``);
+          lines.push(`- **이상 분류**: \`${c.type}\``);
+          lines.push(`- **판단 근거**: ${c.reason}\n`);
+        });
+      } else {
+        lines.push("- 진단 기간 동안 감지된 유의미한 이상 현상이 없습니다. 설비 상태가 양호합니다.\n");
+      }
+
+      return lines.join("\n");
+    }
+
+    function exportMarkdownFile() {
+      const mdContent = generateMarkdownReport();
+      const blob = new Blob([mdContent], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "sensor_anomaly_report.md";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast("마크다운 진단 보고서가 성공적으로 다운로드되었습니다!", "success");
+    }
+
+    // --------------------------------------------------------------------------
+    // [J] 사용자 CSV 파일 파싱 및 로드
+    // --------------------------------------------------------------------------
+    function handleCsvFileUpload(file) {
+      showToast(`'${file.name}' 파일을 분석하고 있습니다...`, "info");
+      
+      Papa.parse(file, {
+        header: true,
+        dynamicTyping: true,
+        skipEmptyLines: true,
+        complete: function(results) {
+          if (!results.data || results.data.length === 0) {
+            showToast("CSV 파일에 데이터가 없습니다.", "error");
+            return;
+          }
+
+          const raw = results.data;
+          const firstRow = raw[0];
+          const cols = Object.keys(firstRow);
+
+          // 시간 컬럼 탐색
+          let timeCol = cols.find(c => ["timestamp", "datetime", "date", "time", "일시", "시간"].includes(c.toLowerCase()));
+          if (!timeCol) timeCol = cols[0];
+
+          // 장비 식별 컬럼 탐색
+          let equipCol = cols.find(c => ["equip_id", "equipment_id", "machine_id", "장비", "설비"].includes(c.toLowerCase()));
+          if (!equipCol) equipCol = "equip_id";
+
+          // 센서 컬럼 식별
+          const exclude = [timeCol, equipCol];
+          const sensorCols = cols.filter(c => !exclude.includes(c) && typeof firstRow[c] === "number");
+
+          // 데이터 정제
+          const cleanData = [];
+          for (let i = 0; i < raw.length; i++) {
+            const row = raw[i];
+            const parsedTime = new Date(row[timeCol]);
+            const item = {
+              timestamp: isNaN(parsedTime) ? new Date(2026, 2, 1, 0, i) : parsedTime,
+              equip_id: String(row[equipCol] || "P-01")
+            };
+            sensorCols.forEach(s => {
+              const val = row[s];
+              item[s] = (val === null || val === undefined || isNaN(val)) ? null : Number(val);
+            });
+            cleanData.push(item);
+          }
+
+          State.rawData = cleanData;
+          State.timeCol = "timestamp";
+          State.equipCol = "equip_id";
+          State.sensorCols = sensorCols.length > 0 ? sensorCols : ["temp", "vib", "pressure", "current", "rpm"];
+
+          runAnomalyDiagnosisEngine(State.rawData);
+          showToast(`CSV 분석 완료! 총 ${cleanData.length.toLocaleString()}건 로드`, "success");
+        },
+        error: function(err) {
+          showToast(`CSV 파싱 실패: ${err.message}`, "error");
+        }
+      });
+    }
+
+    // --------------------------------------------------------------------------
+    // [K] 이벤트 바인딩 및 애플리케이션 초기화
+    // --------------------------------------------------------------------------
+    window.addEventListener("DOMContentLoaded", () => {
+      // 1. 파일 업로드 버튼
+      const fileInput = document.getElementById("csvFileInput");
+      document.getElementById("btnUploadCsv").onclick = () => fileInput.click();
+      fileInput.onchange = (e) => {
+        if (e.target.files && e.target.files[0]) {
+          handleCsvFileUpload(e.target.files[0]);
+        }
+      };
+
+      // 2. 샘플 데이터 로드 버튼
+      document.getElementById("btnLoadSample").onclick = () => {
+        showToast("실제 결측·스파이크·고착 패턴 샘플 데이터 생성 중...", "info");
+        setTimeout(() => {
+          State.rawData = generateMockSensorData();
+          State.sensorCols = ["temp", "vib", "pressure", "current", "rpm"];
+          runAnomalyDiagnosisEngine(State.rawData);
+          showToast("샘플 데이터 로드 완료! (P-01, P-02, P-03 총 129,600건)", "success");
+        }, 100);
+      };
+
+      // 3. 마크다운 보고서 내보내기 버튼
+      document.getElementById("btnExportMarkdown").onclick = exportMarkdownFile;
+
+      // 4. 구간 이동 컨트롤러 버튼
+      document.getElementById("btnPrevChunk").onclick = () => setChunk(Math.floor(State.viewStart / State.chunkSize) - 1);
+      document.getElementById("btnNextChunk").onclick = () => setChunk(Math.floor(State.viewStart / State.chunkSize) + 1);
+      
+      const slider = document.getElementById("chunkSlider");
+      slider.oninput = (e) => setChunk(parseInt(e.target.value) - 1);
+
+      // 4-1. 줌 툴바 버튼 이벤트 (확대, 축소, 줌 리셋)
+      document.getElementById("btnZoomIn").onclick = () => zoomAtRatio(0.5, 0.7);
+      document.getElementById("btnZoomOut").onclick = () => zoomAtRatio(0.5, 1.4);
+      document.getElementById("btnResetZoom").onclick = () => {
+        const currentChunkIdx = Math.floor(State.viewStart / State.chunkSize);
+        State.viewStart = currentChunkIdx * State.chunkSize;
+        State.viewEnd = Math.min(State.viewStart + State.chunkSize, State.currentEquipData.length);
+        updateSliderFromView();
+        redrawAll();
+        showToast("줌 배율이 리셋되었습니다.", "info");
+      };
+
+      // 5. 등급 필터 셀렉트
+      document.getElementById("filterGradeSelect").onchange = renderDiagnosisTable;
+
+      // 6. 차트 PNG 다운로드 버튼
+      document.getElementById("btnSavePng").onclick = () => {
+        const overview = document.getElementById("overviewCanvas");
+        const a = document.createElement("a");
+        a.href = overview.toDataURL("image/png");
+        a.download = `${State.currentEquip}_timeseries_overview.png`;
+        a.click();
+        showToast("타임라인 이미지가 저장되었습니다.", "success");
+      };
+
+      // 7. 키보드 단축키 지원 (좌/우: 구간 이동, 상/하: 장비 전환, +/-: 줌)
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowLeft" || e.key === "a") setChunk(Math.floor(State.viewStart / State.chunkSize) - 1);
+        else if (e.key === "ArrowRight" || e.key === "d") setChunk(Math.floor(State.viewStart / State.chunkSize) + 1);
+        else if (e.key === "+" || e.key === "=") zoomAtRatio(0.5, 0.75);
+        else if (e.key === "-" || e.key === "_") zoomAtRatio(0.5, 1.33);
+        else if (e.key === "ArrowUp" || e.key === "w") {
+          const idx = State.equipList.indexOf(State.currentEquip);
+          if (idx > 0) selectEquipment(State.equipList[idx - 1]);
+        } else if (e.key === "ArrowDown" || e.key === "s") {
+          const idx = State.equipList.indexOf(State.currentEquip);
+          if (idx < State.equipList.length - 1) selectEquipment(State.equipList[idx + 1]);
+        }
+      });
+
+      // 8. 반응형 리사이즈 대응
+      window.addEventListener("resize", () => {
+        redrawAll();
+      });
+
+      // 9. 초기 구동 시 실제 패턴 재현 샘플 자동 로드
+      State.rawData = generateMockSensorData();
+      runAnomalyDiagnosisEngine(State.rawData);
+    });
+  </script>
+</body>
+</html>
